@@ -1,253 +1,243 @@
 // boss.js
 
-// --- 1. 移動範囲パターンの定義 ---
+// 二重定義エラーを防ぐため var を使用
+if (typeof bosses === 'undefined') {
+  var bosses = [];
+}
+
+// 移動範囲
 const moveRangePatterns = {
-  "A": { minY: 20,  maxY: 450 }, // 全体
-  "B": { minY: 20,  maxY: 250 }, // 上部
-  "C": { minY: 250, maxY: 450 }, // 下部
-  "D": { minY: 20,  maxY: 100 }, // 最上段
-  "E": { minY: 200, maxY: 300 }  // 中央
+  "A": { minY: 20,  maxY: 450 },
+  "B": { minY: 20,  maxY: 250 },
+  "C": { minY: 250, maxY: 450 },
+  "D": { minY: 20,  maxY: 100 },
+  "E": { minY: 200, maxY: 300 }
 };
 
 const bossImage = new Image();
 bossImage.src = 'images/boss01.png'; 
 
-const boss = {
-  active: false,
-  currentId: "001",
-  x: 0,
-  y: -48,
-  width: 48,
-  height: 48,
-  hp: 10,
-  maxHp: 10,
-  targetY: 80,
-  status: 'appearing', 
-  damageFlashFrame: 0,
-  invincibleFrame: 0,
-  showStartTextFrame: 0,
-  vx: 0,
-  vy: 0,
-  moveTimer: 0,
-  baseSpeed: 3,
-  stopFrameMax: 0, // 一時停止時間
-  minX: 20, maxX: 380, minY: 50, maxY: 250,
-  explosionCount: 0,
-  explosionTimer: 0,
-  attackTimers: {} // 武器ごとのタイマー保持用
-};
-
-// --- 2. 初期化関数（stage.js のデータを反映） ---
-function initBoss(bossId = "001") {
+function spawnBoss(bossId = "001") {
   const data = bossData[bossId];
   if (!data) return;
 
-  boss.active = true;
-  boss.currentId = bossId;
-  boss.hp = data.hp;
-  boss.maxHp = data.hp;
-  boss.status = 'appearing';
-  
-  // 移動性能の反映
-  boss.baseSpeed = 3 * data.speed; 
-  boss.stopFrameMax = data.stopFrame;
-
-  // 移動範囲の適用
   const range = moveRangePatterns[data.moveRange] || moveRangePatterns["A"];
-  boss.minY = range.minY;
-  boss.maxY = range.maxY;
-  boss.minX = 20;
-  boss.maxX = 400 - boss.width - 20;
-
-  boss.x = (400 - boss.width) / 2;
-  boss.y = -boss.height;
-  boss.targetY = range.minY + 30;
-
-  // 攻撃タイマーの初期化
-  boss.currentAttackType = null; // ★これを追加
-  boss.attackTimers = {};
-  Object.keys(data.attackPattern).forEach(key => {
-    boss.attackTimers[key] = 0;
-  });
-
-  boss.damageFlashFrame = 0;
-  boss.invincibleFrame = 0;
-  boss.moveTimer = 0;
-  boss.vx = 0;
-  boss.vy = 0;
-  boss.explosionCount = 0;
-}
-
-// --- 3. 更新メイン ---
-function updateBoss() {
-  if (!boss.active) return;
-
-  if (boss.hp <= 0 && boss.status !== 'exploding' && boss.status !== 'dead') {
-    boss.status = 'exploding';
-    boss.explosionCount = 0;
-    boss.explosionTimer = 0;
-    if (typeof playBigExplosion === 'function') playBigExplosion();
-    return;
-  }
-
-  if (boss.damageFlashFrame > 0) boss.damageFlashFrame--;
-  if (boss.invincibleFrame > 0) boss.invincibleFrame--;
-
-  if (boss.status === 'appearing') {
-    if (boss.y < boss.targetY) {
-      boss.y += 1.5;
-    } else {
-      boss.status = 'battle';
-      boss.showStartTextFrame = 60;
-    }
-  } else if (boss.status === 'battle') {
-    updateBossMovement();
-    updateBossAttack(); 
-  } else if (boss.status === 'exploding') {
-    updateExplodingStatus();
-  }
-}
-
-// --- 4. 移動ロジック（一時停止対応） ---
-function updateBossMovement() {
-  boss.moveTimer--;
   
-  if (boss.moveTimer <= 0) {
-    // moveTimerがマイナスの間は一時停止（stopFrame分）
-    if (boss.moveTimer > -boss.stopFrameMax) {
-      boss.vx = 0;
-      boss.vy = 0;
-    } else {
-      decideBossMovement();
-      boss.moveTimer = 30; // 次の思考まで1秒
-    }
+  // 出現位置（横）
+  let spawnX = 176; 
+  if (bosses.length === 1) spawnX = 50; 
+  if (bosses.length === 2) spawnX = 300;
+
+  const newBoss = {
+    active: true,
+    currentId: bossId,
+    x: spawnX,
+    y: -60,
+    width: 48,
+    height: 48,
+    hp: data.hp,
+    maxHp: data.hp,
+    // ★ ここを微調整：minY（上端）から 40ピクセル ほど下に降りてくるようにします
+    // これで「全体的に上に寄っている」感覚が解消されます
+    targetY: range.minY + 40, 
+    status: 'appearing', 
+    damageFlashFrame: 0,
+    invincibleFrame: 0,
+    showStartTextFrame: 60,
+    vx: 0, vy: 0, moveTimer: 0,
+    baseSpeed: 3 * data.speed,
+    stopFrameMax: data.stopFrame,
+    explosionCount: 0,
+    explosionTimer: 0,
+    attackTimers: {},
+    currentAttackType: null,
+    attackDuration: 0,
+    minY: range.minY,
+    maxY: range.maxY,
+    minX: 20,
+    maxX: 400 - 48 - 20
+  };
+
+  // ... (以下、attackPatternの初期化などはそのまま)
+  if (data.attackPattern) {
+    Object.keys(data.attackPattern).forEach(key => {
+      newBoss.attackTimers[key] = 0;
+    });
   }
-
-  boss.x += boss.vx;
-  boss.y += boss.vy;
-
-  if (boss.x < boss.minX) { boss.x = boss.minX; boss.vx *= -1; }
-  if (boss.x > boss.maxX) { boss.x = boss.maxX; boss.vx *= -1; }
-  if (boss.y < boss.minY) { boss.y = boss.minY; boss.vy *= -1; }
-  if (boss.y > boss.maxY) { boss.y = boss.maxY; boss.vy *= -1; }
+  bosses.push(newBoss);
 }
 
-function decideBossMovement() {
+function updateBoss() {
+  // 全員が目的地に着いたかチェック
+  const allArrived = bosses.every(b => b.y >= b.targetY);
+
+  bosses.forEach((b) => {
+    if (!b.active && b.status === 'dead') return;
+
+    // 死亡判定
+    if (b.hp <= 0 && b.status !== 'exploding' && b.status !== 'dead') {
+      b.status = 'exploding';
+      if (typeof playBigExplosion === 'function') playBigExplosion();
+      return;
+    }
+
+    if (b.damageFlashFrame > 0) b.damageFlashFrame--;
+    if (b.invincibleFrame > 0) b.invincibleFrame--;
+
+    // --- 状態別の更新ロジック ---
+    if (b.status === 'appearing') {
+      if (b.y < b.targetY) {
+        b.y += 1.5;
+      } else {
+        b.y = b.targetY;
+        // ★ 全員が揃うまで待機状態へ
+        if (allArrived) {
+          b.status = 'wait_text';
+          b.showStartTextFrame = 80; // 少し長めに表示
+          if (b.y < b.minY) b.minY = b.y;
+        }
+      }
+    } else if (b.status === 'wait_text') {
+      b.showStartTextFrame--;
+      if (b.showStartTextFrame <= 0) {
+        b.status = 'battle';
+      }
+    } else if (b.status === 'battle') {
+      updateBossMovementIndividual(b);
+      updateBossAttackIndividual(b); 
+    } else if (b.status === 'exploding') {
+      updateExplodingStatusIndividual(b);
+    }
+  });
+}
+
+function updateBossMovementIndividual(b) {
+  b.moveTimer--;
+  if (b.moveTimer <= 0) {
+    if (b.moveTimer > -b.stopFrameMax) {
+      b.vx = 0; b.vy = 0;
+    } else {
+      decideBossMovementIndividual(b);
+      b.moveTimer = 30;
+    }
+  }
+  b.x += b.vx; b.y += b.vy;
+  if (b.x < b.minX) { b.x = b.minX; b.vx *= -1; }
+  if (b.x > b.maxX) { b.x = b.maxX; b.vx *= -1; }
+  if (b.y < b.minY) { b.y = b.minY; b.vy *= -1; }
+  if (b.y > b.maxY) { b.y = b.maxY; b.vy *= -1; }
+}
+
+function decideBossMovementIndividual(b) {
   let dangerLeft = 0, dangerRight = 0;
   if (typeof gameState !== 'undefined' && gameState.bullets) {
-    gameState.bullets.forEach(b => {
-      if (!b.isEnemyShot && b.y > boss.y && b.y < boss.y + 250) {
-        if (b.x < boss.x + boss.width / 2) dangerLeft++;
+    gameState.bullets.forEach(bullet => {
+      if (!bullet.isEnemyShot && bullet.y > b.y && bullet.y < b.y + 200) {
+        if (bullet.x < b.x + b.width / 2) dangerLeft++;
         else dangerRight++;
       }
     });
   }
-  if (dangerLeft > 0 || dangerRight > 0) {
-    boss.vx = (dangerLeft > dangerRight) ? boss.baseSpeed : -boss.baseSpeed;
-  } else {
-    boss.vx = (Math.random() > 0.5 ? 1 : -1) * boss.baseSpeed;
-  }
-  boss.vy = (Math.random() - 0.5) * 2;
+  b.vx = (dangerLeft > dangerRight) ? b.baseSpeed : -b.baseSpeed;
+  b.vy = (Math.random() - 0.5) * 2;
 }
 
-// --- 5. 攻撃ロジック（同時発射禁止・1種類選択方式） ---
-function updateBossAttack() {
-  const data = bossData[boss.currentId];
-  if (!data) return;
-
-  // 初期化（タイマーがなければ作成）
-  if (!boss.attackTimers) boss.attackTimers = {};
-
-  // 現在、何かを撃っている最中（攻撃モード中）かチェック
-  if (boss.currentAttackType) {
-    const rate = data.attackPattern[boss.currentAttackType];
-    const interval = 30 / rate; // 発射間隔（フレーム）
-
-    if (!boss.attackTimers[boss.currentAttackType]) boss.attackTimers[boss.currentAttackType] = 0;
-    boss.attackTimers[boss.currentAttackType]++;
-
-    if (boss.attackTimers[boss.currentAttackType] >= interval) {
-      // 弾を実際に撃つ（下の fireBossShot を呼び出す）
-      fireBossShot(boss.currentAttackType);
-      boss.attackTimers[boss.currentAttackType] = 0;
-
-      // 攻撃の切り替え判定：約3秒(90フレーム)ごとに50%の確率で別の攻撃へ
-      // （※ずっと同じ攻撃だと単調なので、たまにリセットします）
-      if (Math.random() < 0.02) { 
-        boss.currentAttackType = null; 
-      }
-    }
-  } else {
-    // 次に撃つ攻撃をランダムに選ぶ（attackPatternで0より大きいもの）
-    const availableTypes = Object.keys(data.attackPattern).filter(type => data.attackPattern[type] > 0);
+function updateBossAttackIndividual(b) {
+  const data = bossData[b.currentId];
+  if (!data || !data.attackPattern) return;
+  if (!b.currentAttackType) {
+    const availableTypes = Object.keys(data.attackPattern).filter(t => data.attackPattern[t] > 0);
     if (availableTypes.length > 0) {
-      const nextType = availableTypes[Math.floor(Math.random() * availableTypes.length)];
-      boss.currentAttackType = nextType;
-      boss.attackTimers[nextType] = 0;
+      b.currentAttackType = availableTypes[Math.floor(Math.random() * availableTypes.length)];
+      b.attackTimers[b.currentAttackType] = 0;
+      b.attackDuration = 60 + Math.random() * 60; 
     }
+    return;
   }
+  const type = b.currentAttackType;
+  const rate = data.attackPattern[type];
+  const interval = 30 / rate;
+  if (b.attackTimers[type] === undefined) b.attackTimers[type] = 0;
+  b.attackTimers[type]++;
+  b.attackDuration--; 
+  if (b.attackTimers[type] >= interval) {
+    fireBossShotIndividual(b, type);
+    b.attackTimers[type] = 0;
+  }
+  if (b.attackDuration <= 0) b.currentAttackType = null;
 }
 
-// --- 6. 弾の発射実体（ここが消えていたのがエラーの原因です） ---
-function fireBossShot(type) {
-  const bX = boss.x + boss.width / 2;
-  const bY = boss.y + boss.height;
-  const options = { isEnemyShot: true, type: type }; // typeを渡して相打ち判定を確実にする
-
+function fireBossShotIndividual(b, type) {
+  const bX = b.x + b.width / 2;
+  const bY = b.y + b.height;
+  const options = { isEnemyShot: true, type: type };
   switch (type) {
-    case 'normal':
-      gameState.bullets.push(createBullet(bX - 3, bY, 6, 15, 0, 5, 'white', options));
-      break;
-    case 'spread':
-      const angles = [-0.2, 0, 0.2];
-      angles.forEach(a => {
-        gameState.bullets.push(createBullet(bX - 3, bY, 6, 15, 6 * Math.sin(a), 6 * Math.cos(a), 'pink', options));
-      });
-      break;
-    case 'laser':
-      // レーザーは少し速く、縦長にする
-      gameState.bullets.push(createBullet(bX - 5, bY, 10, 100, 0, 10, 'red', { ...options, isLaser: true }));
-      break;
-    case 'rocket':
-      gameState.bullets.push(createBullet(bX - 5, bY, 10, 20, 0, 3, 'orange', { ...options, isRocket: true }));
-      break;
-    case 'grave':
-      gameState.bullets.push(createBullet(bX - 6, bY, 12, 12, 0, 4, 'gray', { ...options, isGrave: true, timer: 60 }));
-      break;
+    case 'normal': gameState.bullets.push(createBullet(bX-3, bY, 6, 15, 0, 5, 'white', options)); break;
+    case 'spread': [-0.3, 0, 0.3].forEach(a => gameState.bullets.push(createBullet(bX-3, bY, 6, 15, 7*Math.sin(a), 7*Math.cos(a), 'pink', options))); break;
+    case 'laser': gameState.bullets.push(createBullet(bX-5, bY, 10, 120, 0, 12, 'red', { ...options, isLaser: true })); break;
+    case 'ripple': gameState.bullets.push(createBullet(bX, bY, 0, 0, 0, 4, 'cyan', { ...options, isRipple: true, radius: 8, growRate: 0.15, speedY: 4 })); break;
+    case 'rocket': gameState.bullets.push(createBullet(bX-6, bY, 12, 24, 0, 3, 'orange', { ...options, isRocket: true })); break;
+    case 'split': gameState.bullets.push(createBullet(bX-4, bY, 8, 16, 0, 6, 'purple', { ...options, isSplit: true, splitDone: false })); break;
+    case 'bounce': gameState.bullets.push(createBullet(bX-6, bY, 12, 12, 5*(Math.random()<0.5?-1:1), 4, 'lime', { ...options, isBounce: true })); break;
+    case 'grave': gameState.bullets.push(createBullet(bX-8, bY, 16, 16, 0, 3, 'gray', { ...options, isGrave: true, timer: 70, isGraveActive: false, blinkCounter: 0 })); break;
   }
 }
 
-// --- 7. 爆発・描画系（ここも念のため含めておきます） ---
-function updateExplodingStatus() {
-  boss.explosionTimer--;
-  if (boss.explosionTimer <= 0) {
-    const rx = boss.x + Math.random() * boss.width;
-    const ry = boss.y + Math.random() * boss.height;
-    if (typeof spawnExplosion === 'function') {
-      spawnExplosion(rx, ry, { maxRadius: 30, isRocketExplosion: true, silent: true });
-    }
-    boss.explosionCount++;
-    boss.explosionTimer = 10;
-
-    // 8回爆発したら終了
-    if (boss.explosionCount >= 8) {
-      boss.status = 'dead';    // クリア判定を起動させる
-      boss.active = false;     // ★ここで画面から消す！
-      console.log("Boss explosion finished. Status: dead, Active: false");
-    }
+function updateExplodingStatusIndividual(b) {
+  b.explosionTimer--;
+  if (b.explosionTimer <= 0) {
+    const rx = b.x + Math.random() * b.width;
+    const ry = b.y + Math.random() * b.height;
+    if (typeof spawnExplosion === 'function') spawnExplosion(rx, ry, { maxRadius: 30, silent: true });
+    b.explosionCount++;
+    b.explosionTimer = 10;
+    if (b.explosionCount >= 8) { b.status = 'dead'; b.active = false; }
   }
 }
 
 function drawBoss(ctx) {
-  if (!boss.active) return;
-  if (boss.invincibleFrame > 0 && boss.invincibleFrame % 4 < 2) return;
-  ctx.save();
-  if (boss.damageFlashFrame > 0) ctx.filter = 'brightness(10) grayscale(1)'; 
-  if (bossImage.complete && bossImage.naturalWidth !== 0) {
-    ctx.drawImage(bossImage, boss.x, boss.y, boss.width, boss.height);
-  } else {
-    ctx.fillStyle = 'red';
-    ctx.fillRect(boss.x, boss.y, boss.width, boss.height);
+  let showGlobalText = false;
+  let textFrame = 0;
+
+  bosses.forEach((b) => {
+    if (!b.active && b.status === 'dead') return;
+    
+    // ボス本体
+    ctx.save();
+    if (b.invincibleFrame > 0 && b.invincibleFrame % 4 < 2) ctx.globalAlpha = 0.3;
+    if (b.damageFlashFrame > 0) ctx.filter = 'brightness(5) grayscale(1)'; 
+    if (bossImage.complete && bossImage.naturalWidth !== 0) {
+      ctx.drawImage(bossImage, b.x, b.y, b.width, b.height);
+    }
+    ctx.restore();
+
+    // テキスト表示が必要な個体がいるかチェック
+    if (b.status === 'wait_text') {
+      showGlobalText = true;
+      textFrame = b.showStartTextFrame;
+    }
+  });
+
+  // --- 全体テキスト（LV-XXX START!）を一括描画 ---
+  if (showGlobalText) {
+    // 現在のレベルを取得（gameStateから取得するのが確実）
+    const levelStr = String(gameState.selectedLevelIndex).padStart(3, '0');
+    
+    ctx.save();
+    ctx.fillStyle = "yellow";
+    ctx.font = "bold 40px sans-serif"; 
+    ctx.textAlign = "center";
+    ctx.shadowBlur = 15;
+    ctx.shadowColor = "black";
+    
+    // 画面中央に1つだけ表示
+    ctx.fillText(`LV-${levelStr} START!`, 200, 220);
+    
+    // 文字のフェードアウト効果（残り20フレームで薄くする）
+    if (textFrame < 20) {
+      ctx.globalAlpha = textFrame / 20;
+    }
+    
+    ctx.restore();
   }
-  ctx.restore();
 }

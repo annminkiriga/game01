@@ -2,6 +2,9 @@
 // ■前半＋後半統合版
 // ※構造・行数維持／削除なし／フレーム終端で爆発音再生
 
+// 冒頭で bosses を定義（boss.jsより先に読み込まれても大丈夫なように var を使用）
+if (typeof bosses === 'undefined') {  var bosses = [];}
+
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const canvasWidth = canvas.width;
@@ -226,11 +229,10 @@ function startShootingMode() {
   stageCleared = false; 
   stageCompleted = false;
 
-  // 3. ★最重要：ボスのステータスを「生きてる状態」に強制上書き
-  if (typeof boss !== 'undefined') {
-    boss.active = false;      // 一旦オフ
-    boss.status = 'appearing'; // 状態を「登場中」に戻す（'dead'のままだと即パネルが出る）
-    boss.hp = 5;              // HPも念のためここで入れる
+// 3. ★ 複数ボス対応：ボス配列を完全にリセット
+  // これにより、前のゲームのボスが残るのを防ぎ、新しい spawnBoss を受け入れ可能にします
+  if (typeof bosses !== 'undefined') {
+    bosses = []; 
   }
 
   // ── 以降は既存の処理 ──
@@ -314,9 +316,9 @@ function setupShotButtons() {
     img.style.touchAction='manipulation';
     btn.appendChild(img);
 
-    btn.onmousedown=btn.ontouchstart=()=>{
-      // これだけ！
-  if (typeof boss !== 'undefined' && boss.active && boss.status === 'appearing') return;
+    btn.onmousedown = btn.ontouchstart = (e) => {
+    // 古い boss.active の行は完全に削除してください
+    if (typeof bosses !== 'undefined' && bosses.some(b => b.active && b.status === 'appearing')) return;
         if(gameState.shootingIntervalIds[shotKey]) return;
       const interval = shotKey==='spread'?333: shotKey==='rocket'?2000: shotKey==='normal'?220: shotKey==='ripple'?400:100;
       shotDefinitions[shotKey].func(gameState.bullets,gameState.player,gameState.enemies,canvas);
@@ -571,26 +573,27 @@ function update(deltaTime) {
   gameState.frameCount++;
   gameState.stageFrame++;
 
-  // 1. ステージ進行（ボス出現判定）
+  // 1. ステージ進行（ボス・ザコ出現判定）
   const currentStage = stages[gameState.currentStageIndex];
   if (currentStage) {
     for (const event of currentStage) {
       if (event.frame === gameState.stageFrame) {
         if (event.type === 'BOSS') {
-          if (typeof initBoss === 'function') {
-            initBoss(event.bossId || "001"); 
-        // ★ ボスが出現した瞬間の時刻（ミリ秒）を記録
+          if (typeof spawnBoss === 'function') {
+            spawnBoss(event.bossId || "001"); 
             gameState.bossStartTime = performance.now();
           }
         } else if (event.type !== 'END') {
+          // typeがBOSSでもENDでもない場合はザコ敵パターンを生成
           spawnPattern(event.patternIndex, gameState.enemies, canvas, deltaTime);
         }
       }
     }
   }
 
-  // 2. ボスの更新と当たり判定
-  if (typeof boss !== 'undefined' && boss.active) {
+  // 2. ボスの更新と当たり判定 (複数ボス対応)
+  // 古い if(typeof boss...) は削除し、配列 bosses で一括管理
+  if (typeof bosses !== 'undefined' && bosses.length > 0) {
     updateBoss(); 
     checkBossCollision(); 
   }
@@ -617,67 +620,70 @@ function update(deltaTime) {
   checkStageClear();
 }
 
-// ── ボス当たり判定 ─────────
+// ── ボス当たり判定（複数ボス・記録保存対応版） ─────────
 function checkBossCollision() {
-  if (!boss || !boss.active || boss.invincibleFrame > 0 || 
-      boss.status === 'exploding' || boss.status === 'appearing') return;
+  bosses.forEach((b) => {
+    if (!b.active || b.invincibleFrame > 0 || 
+        b.status === 'exploding' || b.status === 'appearing') return;
 
-  const bx = boss.x + (boss.width / 2);
-  const by = boss.y + (boss.height / 2);
-  const hitBoxSize = 24; 
+    const bx = b.x + (b.width / 2);
+    const by = b.y + (b.height / 2);
+    const hitBoxSize = 24; 
 
-  for (let i = gameState.bullets.length - 1; i >= 0; i--) {
-    const b = gameState.bullets[i];
-    if (b.isEnemyShot) continue; 
+    for (let i = gameState.bullets.length - 1; i >= 0; i--) {
+      const bullet = gameState.bullets[i];
+      if (bullet.isEnemyShot) continue; 
 
-    const bCenterX = b.x + (b.width / 2);
-    const bCenterY = b.y + (b.height / 2);
+      const bCenterX = bullet.x + (bullet.width / 2);
+      const bCenterY = bullet.y + (bullet.height / 2);
 
-    if (bCenterX > bx - hitBoxSize && bCenterX < bx + hitBoxSize &&
-        bCenterY > by - hitBoxSize && bCenterY < by + hitBoxSize) {
-      
-      const data = bossData[boss.currentId];
-      let damageRate = 1.0; 
-      if (data && data.resistances) {
-        damageRate = data.resistances[b.type] || 0.1; 
+      if (bCenterX > bx - hitBoxSize && bCenterX < bx + hitBoxSize &&
+          bCenterY > by - hitBoxSize && bCenterY < by + hitBoxSize) {
+        
+        const data = bossData[b.currentId];
+        let damageRate = 1.0; 
+        if (data && data.resistances) {
+          damageRate = data.resistances[bullet.type] || 0.1; 
+        }
+        
+        b.hp -= (1 * damageRate);
+        b.damageFlashFrame = 5;  
+        b.invincibleFrame = 10; 
+
+        queueExplosionSound();
+
+// ボス撃破時の処理
+        if (b.hp <= 0) {
+          b.hp = 0;
+          b.status = 'exploding';
+          playBigExplosion();
+
+          // クリアタイムの計測
+          const endTime = performance.now();
+          gameState.bossClearTime = ((endTime - gameState.bossStartTime) / 1000).toFixed(2);
+
+          // ★ 修正：ボスのID(b.currentId)ではなく、現在のステージ番号(LV-010など)で保存する
+          const lvId = String(gameState.selectedLevelIndex).padStart(3, '0');
+          
+          // ベストタイム更新と保存
+          if (!gameState.bestTimes[lvId] || parseFloat(gameState.bossClearTime) < parseFloat(gameState.bestTimes[lvId])) {
+            gameState.bestTimes[lvId] = gameState.bossClearTime;
+          }
+          localStorage.setItem('bestTimes', JSON.stringify(gameState.bestTimes));
+          localStorage.setItem('maxClearedLevel', gameState.maxClearedLevel);
+        }
+
+        if (!bullet.isLaser) gameState.bullets.splice(i, 1);
+        break; 
       }
-      
-      boss.hp -= (1 * damageRate);
-      boss.damageFlashFrame = 5;  
-      boss.invincibleFrame = 10; 
-
-      queueExplosionSound();
-
-      if (boss.hp <= 0) {
-        boss.hp = 0;
-        boss.status = 'exploding';
-        playBigExplosion();
-
-     // ★ 計測終了：現在の時刻から開始時刻を引いて「秒」にする
-        const endTime = performance.now();
-        gameState.bossClearTime = ((endTime - gameState.bossStartTime) / 1000).toFixed(2);
-
-    // ★ ベストタイム更新ロジック
-        const lvId = boss.currentId;
-        if (!gameState.bestTimes[lvId] || parseFloat(gameState.bossClearTime) < parseFloat(gameState.bestTimes[lvId])) {
-    gameState.bestTimes[lvId] = gameState.bossClearTime;
-  }
-      // ★ ここでブラウザに保存を実行！
-      localStorage.setItem('bestTimes', JSON.stringify(gameState.bestTimes));
-      localStorage.setItem('maxClearedLevel', gameState.maxClearedLevel);
-      }
-
-      if (!b.isLaser) gameState.bullets.splice(i, 1);
-      break; 
     }
-  }
+  });
 }
 
 // ── 描画（draw） ─────────
 function draw(){
   ctx.clearRect(0,0,canvasWidth,canvasHeight);
 
-  // 1. プレイヤー描画
   ctx.save(); 
   if (gameState.player.damageFlashFrame > 0) {
     ctx.filter = 'brightness(5) grayscale(1)'; 
@@ -690,21 +696,10 @@ function draw(){
   }
   ctx.restore();
 
-  // 2. ボス描画
-  if (typeof boss !== 'undefined' && boss.active) {
+  if (typeof drawBoss === 'function') {
     drawBoss(ctx);
-    if (boss.showStartTextFrame > 0) {
-      ctx.save();
-      ctx.fillStyle = "yellow";
-      ctx.font = "bold 32px sans-serif";
-      ctx.textAlign = "center";
-      ctx.fillText(`LV-${boss.currentId} START!`, canvasWidth / 2, canvasHeight / 2);
-      ctx.restore();
-      boss.showStartTextFrame--;
-    }
   }
 
-  // 3. その他描画
   drawEnemies(ctx, gameState.enemies);
   drawBullets(ctx, gameState.bullets);
   drawExplosions(ctx, gameState.explosions);
@@ -729,8 +724,10 @@ function drawEnemies(ctx,enemies){
 // ── ステージクリア管理 ─────────
 let stageCleared = false;
 function checkStageClear() {
-  if (stageCleared) return; 
-  if (typeof boss !== 'undefined' && !boss.active && boss.status === 'dead') {
+  if (stageCleared) return;
+  const livingBosses = bosses.filter(b => b.active);
+  // ボスが生成されており、かつ全員が非アクティブ(撃破)ならクリア
+  if (bosses.length > 0 && livingBosses.length === 0) {
     handleStageClear();
   }
 }
@@ -740,23 +737,23 @@ function handleStageClear() {
   stageCleared = true; 
   stopBGM();
 
-  const clearedLevel = parseInt(boss.currentId);
+  // 現在クリアしたレベルを数値で取得
+  const clearedLevel = gameState.selectedLevelIndex;
+  
+  // 次のレベルを解放
   if (clearedLevel >= gameState.maxClearedLevel) {
       gameState.maxClearedLevel = clearedLevel + 1;
+      localStorage.setItem('maxClearedLevel', gameState.maxClearedLevel);
   }
-
-  // 保存処理
-  if (typeof updateBestTime === 'function') updateBestTime();
+  // ... (以下、リザルトパネルの表示などはそのまま)
 
   const resultDiv = document.createElement('div');
   resultDiv.className = 'mission-result-panel'; 
   resultDiv.style.cssText = `position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,0.95);padding:40px;border:3px solid gold;border-radius:15px;text-align:center;color:white;z-index:3000;box-shadow: 0 0 20px gold;`;
 
-  // ★ 最終ステージ判定
   const isAllClear = (clearedLevel === stages.length);
 
   if (isAllClear) {
-    // 全ステージクリア時の表示
     resultDiv.innerHTML = `
       <h1 style="color: gold; margin-top: 0; font-size: 40px; text-shadow: 0 0 10px yellow;">✨ ALL CLEAR! ✨</h1>
       <p style="font-size: 24px; margin: 20px 0;">おめでとうございます！<br>全てのミッションを完遂しました！</p>
@@ -766,7 +763,6 @@ function handleStageClear() {
       </div>
     `;
   } else {
-    // 通常のステージクリア表示
     resultDiv.innerHTML = `
       <h2 style="color: yellow; margin-top: 0;">MISSION CLEAR</h2>
       <p style="font-size: 20px; margin-bottom: 20px;">
@@ -781,11 +777,9 @@ function handleStageClear() {
 
   document.body.appendChild(resultDiv);
 
-  // ボタンイベントの設定
   if (isAllClear) {
     document.getElementById('btn-to-title-final').onclick = () => {
       resultDiv.remove();
-      // タイトル画面へ戻る処理
       gameState.gameStarted = false;
       stageCleared = false;
       document.getElementById('gameContainer').style.display = 'none';
@@ -794,12 +788,13 @@ function handleStageClear() {
   } else {
     document.getElementById('btn-to-select').onclick = () => { resultDiv.remove(); goToShotSelect(); };
     document.getElementById('btn-to-next').onclick = () => {
-      if (typeof boss !== 'undefined') { boss.active = false; boss.status = 'none'; }
-      gameState.currentStageIndex++; 
+      bosses = []; // 配列リセット
+      gameState.selectedLevelIndex++; // 次のレベルへ
       resultDiv.remove();
       gameState.stageFrame = 0;
       stageCleared = false; 
       bgm.play();
+      startShootingMode(); // 再セットアップして開始
     };
   }
 }
@@ -842,79 +837,54 @@ function spawnExplosion(x, y, options = {}) {
   queueExplosionSound();
 }
 
-// ── ループ開始 ─────────
-requestAnimationFrame(mainLoop);
-
-// ── 1. メインループの修正（既存の mainLoop を上書き、または中身を調整） ─────────
-// タイトル画面から復帰した際に deltaTime が跳ね上がるのを防ぐため、
-// startShootingMode() 内で lastFrameTime = performance.now(); を実行するようにしてください。
-
-// ── 2. タイトル・記録画面の制御 ─────────
-// const ではなく var を使うか、宣言済みの変数に代入する形にします
-var titleElem = document.getElementById('titleScreen');
-var recordElem = document.getElementById('recordScreen');
-
-// 「スタート」ボタン
+// ── ボタン等のイベント登録 ─────────
+// 変数名は前半で定義されている titleScreen, recordScreen に合わせます
 if (document.getElementById('btn-start-game')) {
   document.getElementById('btn-start-game').onclick = () => {
-    if (titleElem) titleElem.style.display = 'none';
-    if (selectScreen) selectScreen.style.display = 'block';
+    titleScreen.style.display = 'none';
+    selectScreen.style.display = 'block';
     initSelectScreen();
   };
 }
 
-// 「記録」ボタン
 if (document.getElementById('btn-show-records')) {
   document.getElementById('btn-show-records').onclick = () => {
-    if (titleElem) titleElem.style.display = 'none';
-    if (recordElem) recordElem.style.display = 'block';
+    titleScreen.style.display = 'none';
+    recordScreen.style.display = 'block';
     showRecords();
   };
 }
 
-// 記録画面の「戻る」ボタン
 if (document.getElementById('btn-back-to-title')) {
   document.getElementById('btn-back-to-title').onclick = () => {
-    if (recordElem) recordElem.style.display = 'none';
-    if (titleElem) titleElem.style.display = 'block';
+    recordScreen.style.display = 'none';
+    titleScreen.style.display = 'block';
   };
 }
 
-// 記録を表示する関数
-function showRecords() {
-  var list = document.getElementById('recordList');
-  if (!list) return;
-  list.innerHTML = ''; 
-  
-  if (!gameState.bestTimes) gameState.bestTimes = {};
-
-  for (var i = 0; i < stages.length; i++) {
-    var lvId = String(i + 1).padStart(3, '0');
-    var time = gameState.bestTimes[lvId];
-    var timeText = time ? `<span style="color:#00ff00;">${time}秒</span>` : "---";
-    list.innerHTML += `<div style="border-bottom: 1px solid #222; margin-bottom: 5px; padding: 5px;">LV-${lvId} ： ${timeText}</div>`;
-  }
+if (document.getElementById('btn-clear-records')) {
+  document.getElementById('btn-clear-records').onclick = () => {
+    if (confirm("すべての記録を消去しますか？")) {
+      localStorage.clear();
+      gameState.bestTimes = {};
+      gameState.maxClearedLevel = 1;
+      gameState.selectedLevelIndex = 1;
+      showRecords();
+      alert("リセットしました。");
+    }
+  };
 }
 
-// ── 初期化（既存の window.onload を完全に書き換え） ─────────
+// ── 初期表示 ─────────
 window.onload = () => {
-  unlockAudio();
-
-  // 画面の初期状態：タイトルのみ表示
-  if (titleElem) titleElem.style.display = 'block';
-  if (selectScreen) selectScreen.style.display = 'none';
-  if (recordElem) recordElem.style.display = 'none';
-  if (gameContainer) gameContainer.style.display = 'none';
-
-  //requestAnimationFrame(mainLoop);
-};
-document.getElementById('btn-clear-records').onclick = () => {
-  if (confirm("すべての記録を消去しますか？（クリアステージもリセットされます）")) {
-    localStorage.clear(); // 保存データを全削除
-    gameState.bestTimes = {};
-    gameState.maxClearedLevel = 1;
-    gameState.selectedLevelIndex = 1;
-    showRecords(); // 画面を更新
-    alert("記録をクリアしました。");
-  }
+  if (typeof unlockAudio === 'function') unlockAudio();
+  
+  // 画面の初期状態をセット
+  titleScreen.style.display = 'block';
+  selectScreen.style.display = 'none';
+  recordScreen.style.display = 'none';
+  gameContainer.style.display = 'none';
+  
+  // ループ開始
+  requestAnimationFrame(mainLoop);
 };

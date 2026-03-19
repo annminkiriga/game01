@@ -106,18 +106,36 @@ function fireHomingShot(bullets, player, enemies, canvas) {
     
     // ターゲット候補の選定
     let target = null;
-    
-    // 1. ボスが有効なら最優先でターゲットにする
-    if (typeof boss !== 'undefined' && boss.active && boss.status === 'battle') {
-      target = boss;
+    let minDistance = 9999;
+
+    // 1. 全てのボスの中から、今戦っている（battle）一番近いボスを探す
+    if (typeof bosses !== 'undefined' && bosses.length > 0) {
+      bosses.forEach(b => {
+        if (b.active && b.status === 'battle') {
+          const dist = Math.hypot((b.x + b.width/2) - x, (b.y + b.height/2) - player.y);
+          if (dist < minDistance) {
+            minDistance = dist;
+            target = b;
+          }
+        }
+      });
     } 
-    // 2. ボスがいなければザコ敵を探す
-    else if (enemies.length > 0) {
-      target = enemies[0];
+    
+    // 2. ボスがいなければ、ザコ敵の中から一番近いものを探す
+    if (!target && enemies.length > 0) {
+      enemies.forEach(e => {
+        if (e.active) {
+          const dist = Math.hypot((e.x + e.width/2) - x, (e.y + e.height/2) - player.y);
+          if (dist < minDistance) {
+            minDistance = dist;
+            target = e;
+          }
+        }
+      });
     }
 
+    // ターゲットが見つかったら、その方向へ発射
     if (target) {
-      // ターゲットの中心を狙う
       const tx = target.x + (target.width / 2);
       const ty = target.y + (target.height / 2);
       const angle = Math.atan2(ty - player.y, tx - x);
@@ -125,7 +143,7 @@ function fireHomingShot(bullets, player, enemies, canvas) {
       dy = bulletSpeed * 0.5 * Math.sin(angle);
     }
     
-    bullets.push(createBullet(x-4, player.y, 8, 8, dx, dy, 'orange'));
+    bullets.push(createBullet(x-4, player.y, 8, 8, dx, dy, 'orange', { type: 'homing' }));
   }
 }
 
